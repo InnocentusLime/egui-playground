@@ -1,6 +1,7 @@
 use eframe::egui;
 use egui::{
-    pos2, vec2, Color32, DragValue, Rect, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
+    Color32, Painter, Pos2, Rect, Response, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget,
+    WidgetText, pos2, vec2,
 };
 
 /*
@@ -17,196 +18,274 @@ Sequencer (MVP):
 
 pub const TIMELINE_STEP: f32 = 20.0;
 pub const ELEMENT_HEIGHT: f32 = 20.0;
-pub const ELEMENT_STRETCH_ZONE: f32 = 15.0;
+pub const CLIP_RESIZE_ZONE: f32 = 15.0;
+pub const CLIP_MIN_SIZE: f32 = 2.0 * CLIP_RESIZE_ZONE + 8.0;
 
 pub struct Sequencer<'a> {
-    pub elements: &'a mut Vec<SequencerElement>,
+    pub clips: &'a mut Vec<Clip>,
     pub state: &'a mut SequencerState,
     pub size: Vec2,
 }
 
-pub struct SequencerElement {
+impl<'a> Sequencer<'a> {
+    fn timeline_input(&mut self, ui: &mut Ui, response: &Response, timeline_rect: Rect) {
+        let Some(pointer) = response.hover_pos() else {
+            return;
+        };
+
+        match *self.state {
+            SequencerState::Idle => self.timeline_input_idle(ui, response, timeline_rect, pointer),
+            SequencerState::MoveClip {
+                clip_id: element_id,
+                start_pos,
+                total_drag_delta: total_drag,
+            } => self.timeline_input_moving_clip(response, element_id, start_pos, total_drag),
+            SequencerState::ResizeClip {
+                clip_id: element_id,
+                start_left,
+                start_right,
+                total_drag_delta: total_drag,
+                resize_left,
+            } => self.timeline_input_resizing_clip(
+                response,
+                element_id,
+                start_left,
+                start_right,
+                total_drag,
+                resize_left,
+            ),
+        }
+    }
+
+    fn timeline_input_idle(
+        &mut self,
+        ui: &mut Ui,
+        response: &Response,
+        timeline_rect: Rect,
+        pointer: Pos2,
+    ) {
+        // Find a clip that the user is hovering on
+        let Some((clip_id, clip, cursor_mode)) =
+            self.clips.iter().enumerate().find_map(|(idx, clip)| {
+                clip.get_pointer_intent(timeline_rect, pointer)
+                    .map(|x| (idx, clip, x))
+            })
+        else {
+            return;
+        };
+
+        match cursor_mode {
+            ClipPointerIntent::Move => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
+            ClipPointerIntent::Resize { .. } => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+            }
+        }
+
+        // Switch state if the user actually started an interraction.
+        if !response.is_pointer_button_down_on() {
+            return;
+        }
+        let new_state = match cursor_mode {
+            ClipPointerIntent::Move => SequencerState::MoveClip {
+                clip_id,
+                start_pos: clip.pos,
+                total_drag_delta: 0.0f32,
+            },
+            ClipPointerIntent::Resize { resize_left } => SequencerState::ResizeClip {
+                resize_left,
+                clip_id,
+                start_left: clip.pos,
+                start_right: clip.pos + clip.len,
+                total_drag_delta: 0.0f32,
+            },
+        };
+        *self.state = new_state;
+    }
+
+    fn timeline_input_moving_clip(
+        &mut self,
+        response: &Response,
+        element_id: usize,
+        start_pos: f32,
+        mut total_drag_delta: f32,
+    ) {
+        if response.drag_stopped() {
+            *self.state = SequencerState::Idle;
+            return;
+        }
+        total_drag_delta += response.drag_delta().x;
+
+        let element = &mut self.clips[element_id];
+        element.pos = start_pos + total_drag_delta;
+        *self.state = SequencerState::MoveClip {
+            clip_id: element_id,
+            start_pos,
+            total_drag_delta,
+        }
+    }
+
+    fn timeline_input_resizing_clip(
+        &mut self,
+        response: &Response,
+        element_id: usize,
+        start_left: f32,
+        start_right: f32,
+        mut total_drag_delta: f32,
+        resize_left: bool,
+    ) {
+        if response.drag_stopped() {
+            *self.state = SequencerState::Idle;
+            return;
+        }
+        total_drag_delta += response.drag_delta().x;
+
+        let (mut final_left, mut final_right) = (start_left, start_right);
+        if resize_left {
+            final_left += total_drag_delta;
+        } else {
+            final_right += total_drag_delta;
+        };
+        if final_right - final_left < CLIP_MIN_SIZE {
+            return;
+        }
+
+        let element = &mut self.clips[element_id];
+        element.len = final_right - final_left;
+        element.pos = final_left;
+        *self.state = SequencerState::ResizeClip {
+            clip_id: element_id,
+            start_left,
+            start_right,
+            resize_left,
+            total_drag_delta,
+        }
+    }
+
+    fn paint_timeline(&self, painter: &Painter, timeline_rect: Rect) {
+        painter.rect_filled(timeline_rect, 0.0, Color32::WHITE);
+
+        for section in 1..((timeline_rect.width() / TIMELINE_STEP) as i32) {
+            let mark_x = timeline_rect.left() + section as f32 * TIMELINE_STEP;
+            let mark_points = [
+                pos2(mark_x, timeline_rect.top()),
+                pos2(mark_x, timeline_rect.bottom()),
+            ];
+            painter.line_segment(mark_points, Stroke::new(1.0, Color32::GRAY));
+        }
+    }
+
+    fn paint_clips(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
+        for clip in &*self.clips {
+            clip.paint(ui, painter, timeline_rect);
+        }
+    }
+
+    fn paint_timeline_cursor(&self, response: &Response, painter: &Painter, timeline_rect: Rect) {
+        let Some(hover) = response.hover_pos() else {
+            return;
+        };
+        painter.line_segment(
+            [
+                pos2(hover.x, timeline_rect.top()),
+                pos2(hover.x, timeline_rect.bottom()),
+            ],
+            Stroke::new(1.0, Color32::RED),
+        );
+    }
+}
+
+pub struct Clip {
     pub text: Option<WidgetText>,
     pub pos: f32,
     pub len: f32,
 }
 
+impl Clip {
+    pub fn rect(&self, timeline_rect: Rect) -> Rect {
+        let top = timeline_rect.top();
+        let left = timeline_rect.left();
+
+        Rect::from_min_size(pos2(left + self.pos, top), vec2(self.len, ELEMENT_HEIGHT))
+    }
+
+    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
+        let this_rect = self.rect(timeline_rect);
+
+        painter.rect_filled(this_rect, 4.0, Color32::RED);
+        let Some(text) = &self.text else { return };
+        let text_gal = text.clone().into_galley(
+            ui,
+            Some(egui::TextWrapMode::Truncate),
+            self.len,
+            TextStyle::Button,
+        );
+        let text_pos = ui
+            .layout()
+            .align_size_within_rect(text_gal.size(), this_rect)
+            .min;
+        painter.galley(text_pos, text_gal, Color32::WHITE);
+    }
+
+    pub fn get_pointer_intent(
+        &self,
+        timeline_rect: Rect,
+        pointer: Pos2,
+    ) -> Option<ClipPointerIntent> {
+        let this_rect = self.rect(timeline_rect);
+
+        if !this_rect.contains(pointer) {
+            return None;
+        }
+        let local_off = pointer.x - this_rect.left();
+        let resize_left = local_off <= CLIP_RESIZE_ZONE;
+        let resize_right = local_off >= self.len - CLIP_RESIZE_ZONE;
+
+        if resize_left || resize_right {
+            Some(ClipPointerIntent::Resize { resize_left })
+        } else {
+            Some(ClipPointerIntent::Move)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ClipPointerIntent {
+    Move,
+    Resize { resize_left: bool },
+}
+
 #[derive(Debug)]
 pub enum SequencerState {
-    None,
-    MovingElement {
-        element_id: usize,
+    Idle,
+    MoveClip {
+        clip_id: usize,
         start_pos: f32,
-        total_drag: f32,
+        total_drag_delta: f32,
     },
-    StretchingElementLeft {
-        element_id: usize,
+    ResizeClip {
+        clip_id: usize,
         start_left: f32,
         start_right: f32,
-        total_drag: f32,
-    },
-    StretchingElementRight {
-        element_id: usize,
-        start_left: f32,
-        start_right: f32,
-        total_drag: f32,
+        resize_left: bool,
+        total_drag_delta: f32,
     },
 }
 
 impl<'a> Widget for Sequencer<'a> {
-    fn ui(self, ui: &mut Ui) -> egui::Response {
-        let (reponse, painter) = ui.allocate_painter(self.size, Sense::click_and_drag());
-
-        if !ui.is_rect_visible(reponse.rect) {
-            return reponse;
+    fn ui(mut self, ui: &mut Ui) -> egui::Response {
+        let (response, painter) = ui.allocate_painter(self.size, Sense::click_and_drag());
+        let timeline_rect = response.rect;
+        if !ui.is_rect_visible(timeline_rect) {
+            return response;
         }
 
-        let timeline_rect = reponse.rect;
+        self.timeline_input(ui, &response, timeline_rect);
 
-        painter.rect_filled(timeline_rect, 0.0, Color32::WHITE);
+        self.paint_timeline(&painter, timeline_rect);
+        self.paint_clips(ui, &painter, timeline_rect);
+        self.paint_timeline_cursor(&response, &painter, timeline_rect);
 
-        for section in 1..((timeline_rect.width() / TIMELINE_STEP) as i32) {
-            painter.line_segment(
-                [
-                    pos2(
-                        timeline_rect.left() + section as f32 * TIMELINE_STEP,
-                        timeline_rect.top(),
-                    ),
-                    pos2(
-                        timeline_rect.left() + section as f32 * TIMELINE_STEP,
-                        timeline_rect.bottom(),
-                    ),
-                ],
-                Stroke::new(1.0, Color32::GRAY),
-            );
-        }
-
-        for (idx, element) in self.elements.iter_mut().enumerate() {
-            let top = timeline_rect.top();
-            let left = timeline_rect.left();
-            let element_rect = Rect::from_min_size(
-                pos2(left + element.pos, top),
-                vec2(element.len, ELEMENT_HEIGHT),
-            );
-            painter.rect_filled(element_rect, 4.0, Color32::RED);
-            if let Some(text) = &element.text {
-                let text_gal = text.clone().into_galley(
-                    ui,
-                    Some(egui::TextWrapMode::Truncate),
-                    element.len,
-                    TextStyle::Button,
-                );
-                let text_pos = ui
-                    .layout()
-                    .align_size_within_rect(text_gal.size(), element_rect)
-                    .min;
-                painter.galley(text_pos, text_gal, Color32::WHITE);
-            }
-
-            let Some(pointer) = reponse.hover_pos() else {
-                continue;
-            };
-
-            match self.state {
-                SequencerState::None => {
-                    if !element_rect.contains(pointer) {
-                        continue;
-                    }
-                    let local_off = pointer.x - element_rect.left();
-                    if local_off <= ELEMENT_STRETCH_ZONE {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                        if reponse.is_pointer_button_down_on() {
-                            *self.state = SequencerState::StretchingElementLeft { 
-                                element_id: idx, 
-                                start_left: element.pos,
-                                start_right: element.pos + element.len,
-                                total_drag: 0.0f32,
-                            }
-                        }
-                    } else if local_off >= element_rect.width() - ELEMENT_STRETCH_ZONE {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                        if reponse.is_pointer_button_down_on() {
-                            *self.state = SequencerState::StretchingElementRight { 
-                                element_id: idx, 
-                                start_left: element.pos,
-                                start_right: element.pos + element.len,
-                                total_drag: 0.0f32,
-                            }
-                        }
-                    } else {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                        if reponse.is_pointer_button_down_on() {
-                            *self.state = SequencerState::MovingElement { 
-                                element_id: idx, 
-                                start_pos: element.pos,
-                                total_drag: 0.0f32,
-                            }
-                        }
-                    }
-                },
-                SequencerState::MovingElement { 
-                    element_id, 
-                    start_pos,
-                    total_drag, 
-                } if *element_id == idx => {
-                    if reponse.drag_stopped() {
-                        *self.state = SequencerState::None;
-                        continue
-                    }
-                    *total_drag += reponse.drag_delta().x;
-
-                    let final_pos = *start_pos + *total_drag;
-                    element.pos = final_pos;
-                },
-                SequencerState::StretchingElementLeft { 
-                    element_id, 
-                    start_left, 
-                    start_right,
-                    total_drag, 
-                } if *element_id == idx => {
-                    if reponse.drag_stopped() {
-                        *self.state = SequencerState::None;
-                        continue
-                    }
-                    *total_drag += reponse.drag_delta().x;
-
-                    let final_left = *start_left + *total_drag;
-                    let final_right = *start_right;
-                    element.len = final_right - final_left;
-                    element.pos = final_left;
-                },
-                SequencerState::StretchingElementRight { 
-                    element_id, 
-                    start_left, 
-                    start_right,
-                    total_drag, 
-                } if *element_id == idx => {
-                    if reponse.drag_stopped() {
-                        *self.state = SequencerState::None;
-                        continue
-                    }
-                    *total_drag += reponse.drag_delta().x;
-
-                    let final_left = *start_left;
-                    let final_right = *start_right + *total_drag;
-                    element.len = final_right - final_left;
-                    element.pos = final_left;
-                },
-                _ => (),
-            }
-        }
-
-        if let Some(hover) = reponse.hover_pos() {
-            painter.line_segment(
-                [
-                    pos2(hover.x, timeline_rect.top()),
-                    pos2(hover.x, timeline_rect.bottom()),
-                ],
-                Stroke::new(1.0, Color32::RED),
-            );
-        }
-
-        reponse
+        response
     }
 }
 
@@ -224,7 +303,7 @@ fn main() {
 
 struct MyEguiApp {
     sequencer_state: SequencerState,
-    elements: Vec<SequencerElement>,
+    elements: Vec<Clip>,
 }
 
 impl MyEguiApp {
@@ -234,14 +313,14 @@ impl MyEguiApp {
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
         Self {
-            sequencer_state: SequencerState::None,
+            sequencer_state: SequencerState::Idle,
             elements: vec![
-                SequencerElement {
+                Clip {
                     text: Some("lol".into()),
                     pos: 10.0,
                     len: 40.0,
                 },
-                SequencerElement {
+                Clip {
                     text: Some("some event".into()),
                     pos: 60.0,
                     len: 60.0,
@@ -260,7 +339,7 @@ impl eframe::App for MyEguiApp {
                 let _ = ui.button("lol");
                 Sequencer {
                     state: &mut self.sequencer_state,
-                    elements: &mut self.elements,
+                    clips: &mut self.elements,
                     size: Vec2::new(500.0, 200.0),
                 }
                 .ui(ui);
