@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{
-    Color32, Rect, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText, pos2, vec2,
+    pos2, vec2, Color32, DragValue, Rect, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
 };
 
 /*
@@ -21,6 +21,7 @@ pub const ELEMENT_STRETCH_ZONE: f32 = 15.0;
 
 pub struct Sequencer<'a> {
     pub elements: &'a mut Vec<SequencerElement>,
+    pub state: &'a mut SequencerState,
     pub size: Vec2,
 }
 
@@ -28,6 +29,28 @@ pub struct SequencerElement {
     pub text: Option<WidgetText>,
     pub pos: f32,
     pub len: f32,
+}
+
+#[derive(Debug)]
+pub enum SequencerState {
+    None,
+    MovingElement {
+        element_id: usize,
+        start_pos: f32,
+        total_drag: f32,
+    },
+    StretchingElementLeft {
+        element_id: usize,
+        start_left: f32,
+        start_right: f32,
+        total_drag: f32,
+    },
+    StretchingElementRight {
+        element_id: usize,
+        start_left: f32,
+        start_right: f32,
+        total_drag: f32,
+    },
 }
 
 impl<'a> Widget for Sequencer<'a> {
@@ -58,7 +81,7 @@ impl<'a> Widget for Sequencer<'a> {
             );
         }
 
-        for element in self.elements {
+        for (idx, element) in self.elements.iter_mut().enumerate() {
             let top = timeline_rect.top();
             let left = timeline_rect.left();
             let element_rect = Rect::from_min_size(
@@ -83,34 +106,93 @@ impl<'a> Widget for Sequencer<'a> {
             let Some(pointer) = reponse.hover_pos() else {
                 continue;
             };
-            if !element_rect.contains(pointer) {
-                continue;
-            }
 
-            let local_off = pointer.x - element_rect.left();
-            if local_off <= ELEMENT_STRETCH_ZONE {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                if !reponse.dragged() {
-                    continue;
-                }
-                let delta = reponse.drag_delta();
-                element.len -= delta.x;
-                element.pos += delta.x;
-            } else if local_off >= element_rect.width() - ELEMENT_STRETCH_ZONE {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-                if !reponse.dragged() {
-                    continue;
-                }
-                let delta = reponse.drag_delta();
-                element.len += delta.x;
-            } else {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
-                if !reponse.dragged() {
-                    continue;
-                }
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                let delta = reponse.drag_delta();
-                element.pos += delta.x;
+            match self.state {
+                SequencerState::None => {
+                    if !element_rect.contains(pointer) {
+                        continue;
+                    }
+                    let local_off = pointer.x - element_rect.left();
+                    if local_off <= ELEMENT_STRETCH_ZONE {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        if reponse.is_pointer_button_down_on() {
+                            *self.state = SequencerState::StretchingElementLeft { 
+                                element_id: idx, 
+                                start_left: element.pos,
+                                start_right: element.pos + element.len,
+                                total_drag: 0.0f32,
+                            }
+                        }
+                    } else if local_off >= element_rect.width() - ELEMENT_STRETCH_ZONE {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                        if reponse.is_pointer_button_down_on() {
+                            *self.state = SequencerState::StretchingElementRight { 
+                                element_id: idx, 
+                                start_left: element.pos,
+                                start_right: element.pos + element.len,
+                                total_drag: 0.0f32,
+                            }
+                        }
+                    } else {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                        if reponse.is_pointer_button_down_on() {
+                            *self.state = SequencerState::MovingElement { 
+                                element_id: idx, 
+                                start_pos: element.pos,
+                                total_drag: 0.0f32,
+                            }
+                        }
+                    }
+                },
+                SequencerState::MovingElement { 
+                    element_id, 
+                    start_pos,
+                    total_drag, 
+                } if *element_id == idx => {
+                    if reponse.drag_stopped() {
+                        *self.state = SequencerState::None;
+                        continue
+                    }
+                    *total_drag += reponse.drag_delta().x;
+
+                    let final_pos = *start_pos + *total_drag;
+                    element.pos = final_pos;
+                },
+                SequencerState::StretchingElementLeft { 
+                    element_id, 
+                    start_left, 
+                    start_right,
+                    total_drag, 
+                } if *element_id == idx => {
+                    if reponse.drag_stopped() {
+                        *self.state = SequencerState::None;
+                        continue
+                    }
+                    *total_drag += reponse.drag_delta().x;
+
+                    let final_left = *start_left + *total_drag;
+                    let final_right = *start_right;
+                    element.len = final_right - final_left;
+                    element.pos = final_left;
+                },
+                SequencerState::StretchingElementRight { 
+                    element_id, 
+                    start_left, 
+                    start_right,
+                    total_drag, 
+                } if *element_id == idx => {
+                    if reponse.drag_stopped() {
+                        *self.state = SequencerState::None;
+                        continue
+                    }
+                    *total_drag += reponse.drag_delta().x;
+
+                    let final_left = *start_left;
+                    let final_right = *start_right + *total_drag;
+                    element.len = final_right - final_left;
+                    element.pos = final_left;
+                },
+                _ => (),
             }
         }
 
@@ -140,8 +222,8 @@ fn main() {
     .unwrap();
 }
 
-#[derive(Default)]
 struct MyEguiApp {
+    sequencer_state: SequencerState,
     elements: Vec<SequencerElement>,
 }
 
@@ -152,6 +234,7 @@ impl MyEguiApp {
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
         Self {
+            sequencer_state: SequencerState::None,
             elements: vec![
                 SequencerElement {
                     text: Some("lol".into()),
@@ -176,6 +259,7 @@ impl eframe::App for MyEguiApp {
                 ui.label("Hello world!");
                 let _ = ui.button("lol");
                 Sequencer {
+                    state: &mut self.sequencer_state,
                     elements: &mut self.elements,
                     size: Vec2::new(500.0, 200.0),
                 }
