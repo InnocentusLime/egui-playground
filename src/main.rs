@@ -1,7 +1,7 @@
 use eframe::egui;
 use egui::{
     Color32, Painter, Pos2, Rect, Response, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget,
-    WidgetText, pos2, vec2,
+    WidgetText, epaint, pos2, vec2,
 };
 
 /*
@@ -16,9 +16,9 @@ Sequencer (MVP):
 4. Add tracks
 */
 
-pub const TIMELINE_STEP: f32 = 20.0;
+pub const PIXELS_PER_UNIT: f32 = 20.0;
 pub const ELEMENT_HEIGHT: f32 = 20.0;
-pub const CLIP_RESIZE_ZONE: f32 = 15.0;
+pub const CLIP_RESIZE_ZONE: f32 = 8.0;
 pub const CLIP_MIN_SIZE: f32 = 2.0 * CLIP_RESIZE_ZONE + 8.0;
 
 pub struct Sequencer<'a> {
@@ -161,16 +161,23 @@ impl<'a> Sequencer<'a> {
         }
     }
 
-    fn paint_timeline(&self, painter: &Painter, timeline_rect: Rect) {
-        painter.rect_filled(timeline_rect, 0.0, Color32::WHITE);
+    fn paint_timeline(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
+        painter.rect(
+            timeline_rect,
+            0.0,
+            ui.visuals().noninteractive().bg_fill,
+            ui.visuals().noninteractive().fg_stroke,
+            epaint::StrokeKind::Inside,
+        );
 
-        for section in 1..((timeline_rect.width() / TIMELINE_STEP) as i32) {
-            let mark_x = timeline_rect.left() + section as f32 * TIMELINE_STEP;
+        for section in 1..((timeline_rect.width() / PIXELS_PER_UNIT) as i32) {
+            let mark_x = timeline_rect.left() + section as f32 * PIXELS_PER_UNIT;
             let mark_points = [
                 pos2(mark_x, timeline_rect.top()),
                 pos2(mark_x, timeline_rect.bottom()),
             ];
-            painter.line_segment(mark_points, Stroke::new(1.0, Color32::GRAY));
+            let color = ui.visuals().weak_text_color();
+            painter.line_segment(mark_points, Stroke::new(1.0, color));
         }
     }
 
@@ -210,18 +217,42 @@ impl Clip {
 
     pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
         let this_rect = self.rect(timeline_rect);
+        let left_resize_rect = Rect {
+            max: pos2(this_rect.min.x + CLIP_RESIZE_ZONE, this_rect.max.y),
+            ..this_rect
+        };
+        let right_resize_rect = Rect {
+            min: pos2(this_rect.max.x - CLIP_RESIZE_ZONE, this_rect.min.y),
+            ..this_rect
+        };
+        let move_rect = Rect {
+            min: pos2(this_rect.min.x + CLIP_RESIZE_ZONE * 0.5, this_rect.min.y),
+            max: pos2(this_rect.max.x - CLIP_RESIZE_ZONE * 0.5, this_rect.max.y),
+        };
 
-        painter.rect_filled(this_rect, 4.0, Color32::RED);
+        let border_stroke = ui.visuals().widgets.inactive.bg_stroke;
+        painter.rect_filled(left_resize_rect, 0.0, Color32::DARK_RED);
+        painter.rect_filled(right_resize_rect, 0.0, Color32::DARK_RED);
+        painter.rect_filled(move_rect, 0.0, Color32::RED);
+        painter.rect(
+            this_rect,
+            0.0,
+            Color32::TRANSPARENT,
+            border_stroke,
+            egui::StrokeKind::Inside,
+        );
+
+        let padding = ui.spacing().button_padding;
         let Some(text) = &self.text else { return };
         let text_gal = text.clone().into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
-            self.len,
+            self.len - 2.0 * padding.x,
             TextStyle::Button,
         );
         let text_pos = ui
             .layout()
-            .align_size_within_rect(text_gal.size(), this_rect)
+            .align_size_within_rect(text_gal.size(), this_rect.shrink2(padding))
             .min;
         painter.galley(text_pos, text_gal, Color32::WHITE);
     }
@@ -281,7 +312,7 @@ impl<'a> Widget for Sequencer<'a> {
 
         self.timeline_input(ui, &response, timeline_rect);
 
-        self.paint_timeline(&painter, timeline_rect);
+        self.paint_timeline(ui, &painter, timeline_rect);
         self.paint_clips(ui, &painter, timeline_rect);
         self.paint_timeline_cursor(&response, &painter, timeline_rect);
 
