@@ -39,7 +39,7 @@ impl<'a> Sequencer<'a> {
                 clip_id: element_id,
                 start_pos,
                 total_drag_delta: total_drag,
-            } => self.timeline_input_moving_clip(response, element_id, start_pos, total_drag),
+            } => self.timeline_input_moving_clip(ui, response, element_id, start_pos, total_drag),
             SequencerState::ResizeClip {
                 clip_id: element_id,
                 start_left,
@@ -47,6 +47,7 @@ impl<'a> Sequencer<'a> {
                 total_drag_delta: total_drag,
                 resize_left,
             } => self.timeline_input_resizing_clip(
+                ui,
                 response,
                 element_id,
                 start_left,
@@ -76,9 +77,7 @@ impl<'a> Sequencer<'a> {
 
         match cursor_mode {
             ClipPointerIntent::Move => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
-            ClipPointerIntent::Resize { .. } => {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
-            }
+            ClipPointerIntent::Resize { .. } => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
         }
 
         // Switch state if the user actually started an interraction.
@@ -104,12 +103,14 @@ impl<'a> Sequencer<'a> {
 
     fn timeline_input_moving_clip(
         &mut self,
+        ui: &mut Ui,
         response: &Response,
         element_id: usize,
         start_pos: f32,
         mut total_drag_delta: f32,
     ) {
-        if response.drag_stopped() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        if !response.is_pointer_button_down_on() {
             *self.state = SequencerState::Idle;
             return;
         }
@@ -126,6 +127,7 @@ impl<'a> Sequencer<'a> {
 
     fn timeline_input_resizing_clip(
         &mut self,
+        ui: &mut Ui,
         response: &Response,
         element_id: usize,
         start_left: f32,
@@ -133,7 +135,8 @@ impl<'a> Sequencer<'a> {
         mut total_drag_delta: f32,
         resize_left: bool,
     ) {
-        if response.drag_stopped() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        if !response.is_pointer_button_down_on() {
             *self.state = SequencerState::Idle;
             return;
         }
