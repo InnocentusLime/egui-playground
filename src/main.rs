@@ -91,8 +91,10 @@ impl<'a> Sequencer<'a> {
             ClipPointerIntent::Resize { .. } => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
         }
 
+        let left_button_down = ui.ctx()
+            .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
         // Switch state if the user actually started an interraction.
-        if !response.is_pointer_button_down_on() {
+        if !response.is_pointer_button_down_on() || !left_button_down {
             return;
         }
         let new_state = match cursor_mode {
@@ -121,7 +123,9 @@ impl<'a> Sequencer<'a> {
         mut total_drag_delta: f32,
     ) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        if !response.is_pointer_button_down_on() {
+        let left_button_down = ui.ctx()
+            .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+        if !response.is_pointer_button_down_on() || !left_button_down {
             *self.state = SequencerState::Idle;
             return;
         }
@@ -147,7 +151,9 @@ impl<'a> Sequencer<'a> {
         resize_left: bool,
     ) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        if !response.is_pointer_button_down_on() {
+        let left_button_down = ui.ctx()
+            .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+        if !response.is_pointer_button_down_on() && !left_button_down {
             *self.state = SequencerState::Idle;
             return;
         }
