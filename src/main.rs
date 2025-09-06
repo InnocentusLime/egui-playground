@@ -1,7 +1,6 @@
 use eframe::egui;
 use egui::{
-    Color32, Painter, Pos2, Rect, Response, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget,
-    WidgetText, epaint, pos2, vec2,
+    epaint, pos2, vec2, Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
 };
 
 /*
@@ -24,6 +23,7 @@ pub const CLIP_MIN_SIZE: f32 = 2.0 * CLIP_RESIZE_ZONE + 8.0;
 pub struct Sequencer<'a> {
     pub clips: &'a mut Vec<Clip>,
     pub state: &'a mut SequencerState,
+    pub zoom: &'a mut f32,
     pub size: Vec2,
 }
 
@@ -32,6 +32,17 @@ impl<'a> Sequencer<'a> {
         let Some(pointer) = response.hover_pos() else {
             return;
         };
+
+        let zoom = ui.ctx().input(|input| if input.key_pressed(Key::Plus) {
+            Some(1.3f32)
+        } else if input.key_pressed(Key::Minus) {
+            Some((1.3f32).recip())
+        } else {
+            None
+        });
+        if let Some(zoom) = zoom {
+            *self.zoom *= zoom;
+        }
 
         match *self.state {
             SequencerState::Idle => self.timeline_input_idle(ui, response, timeline_rect, pointer),
@@ -68,7 +79,7 @@ impl<'a> Sequencer<'a> {
         // Find a clip that the user is hovering on
         let Some((clip_id, clip, cursor_mode)) =
             self.clips.iter().enumerate().find_map(|(idx, clip)| {
-                clip.get_pointer_intent(timeline_rect, pointer)
+                clip.get_pointer_intent(timeline_rect, pointer, *self.zoom)
                     .map(|x| (idx, clip, x))
             })
         else {
@@ -117,7 +128,7 @@ impl<'a> Sequencer<'a> {
         total_drag_delta += response.drag_delta().x;
 
         let element = &mut self.clips[element_id];
-        element.pos = start_pos + total_drag_delta;
+        element.pos = start_pos + total_drag_delta / *self.zoom;
         *self.state = SequencerState::MoveClip {
             clip_id: element_id,
             start_pos,
@@ -144,9 +155,9 @@ impl<'a> Sequencer<'a> {
 
         let (mut final_left, mut final_right) = (start_left, start_right);
         if resize_left {
-            final_left += total_drag_delta;
+            final_left += total_drag_delta / *self.zoom;
         } else {
-            final_right += total_drag_delta;
+            final_right += total_drag_delta / *self.zoom;
         };
         if final_right - final_left < CLIP_MIN_SIZE {
             return;
@@ -174,7 +185,7 @@ impl<'a> Sequencer<'a> {
         );
 
         for section in 1..((timeline_rect.width() / PIXELS_PER_UNIT) as i32) {
-            let mark_x = timeline_rect.left() + section as f32 * PIXELS_PER_UNIT;
+            let mark_x = timeline_rect.left() + section as f32 * PIXELS_PER_UNIT * *self.zoom;
             let mark_points = [
                 pos2(mark_x, timeline_rect.top()),
                 pos2(mark_x, timeline_rect.bottom()),
@@ -186,7 +197,7 @@ impl<'a> Sequencer<'a> {
 
     fn paint_clips(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
         for clip in &*self.clips {
-            clip.paint(ui, painter, timeline_rect);
+            clip.paint(ui, painter, timeline_rect, *self.zoom);
         }
     }
 
@@ -211,15 +222,15 @@ pub struct Clip {
 }
 
 impl Clip {
-    pub fn rect(&self, timeline_rect: Rect) -> Rect {
+    pub fn rect(&self, timeline_rect: Rect, zoom: f32) -> Rect {
         let top = timeline_rect.top();
         let left = timeline_rect.left();
 
-        Rect::from_min_size(pos2(left + self.pos, top), vec2(self.len, ELEMENT_HEIGHT))
+        Rect::from_min_size(pos2(left + self.pos * zoom, top), vec2(self.len * zoom, ELEMENT_HEIGHT))
     }
 
-    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
-        let this_rect = self.rect(timeline_rect);
+    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, zoom: f32) {
+        let this_rect = self.rect(timeline_rect, zoom);
         let left_resize_rect = Rect {
             max: pos2(this_rect.min.x + CLIP_RESIZE_ZONE, this_rect.max.y),
             ..this_rect
@@ -250,7 +261,7 @@ impl Clip {
         let text_gal = text.clone().into_galley(
             ui,
             Some(egui::TextWrapMode::Truncate),
-            self.len - 2.0 * padding.x,
+            this_rect.width() - 2.0 * padding.x,
             TextStyle::Button,
         );
         let text_pos = ui
@@ -264,15 +275,16 @@ impl Clip {
         &self,
         timeline_rect: Rect,
         pointer: Pos2,
+        zoom: f32,
     ) -> Option<ClipPointerIntent> {
-        let this_rect = self.rect(timeline_rect);
+        let this_rect = self.rect(timeline_rect, zoom);
 
         if !this_rect.contains(pointer) {
             return None;
         }
         let local_off = pointer.x - this_rect.left();
         let resize_left = local_off <= CLIP_RESIZE_ZONE;
-        let resize_right = local_off >= self.len - CLIP_RESIZE_ZONE;
+        let resize_right = local_off >= this_rect.width() - CLIP_RESIZE_ZONE;
 
         if resize_left || resize_right {
             Some(ClipPointerIntent::Resize { resize_left })
@@ -337,6 +349,7 @@ fn main() {
 
 struct MyEguiApp {
     sequencer_state: SequencerState,
+    zoom: f32,
     elements: Vec<Clip>,
 }
 
@@ -360,6 +373,7 @@ impl MyEguiApp {
                     len: 60.0,
                 },
             ],
+            zoom: 1.0,
         }
     }
 }
@@ -375,6 +389,7 @@ impl eframe::App for MyEguiApp {
                     state: &mut self.sequencer_state,
                     clips: &mut self.elements,
                     size: Vec2::new(500.0, 200.0),
+                    zoom: &mut self.zoom,
                 }
                 .ui(ui);
                 ui.label("Hello world!");
