@@ -4,10 +4,10 @@ use egui::{
     WidgetText, epaint, pos2, vec2,
 };
 
-pub const PIXELS_PER_UNIT: f32 = 20.0;
+pub const PIXELS_PER_UNIT: f32 = 10.0;
 pub const CLIP_HEIGHT: f32 = 20.0;
-pub const CLIP_RESIZE_ZONE: f32 = 8.0;
-pub const CLIP_MIN_SIZE: f32 = 2.0 * CLIP_RESIZE_ZONE + 8.0;
+pub const CLIP_RESIZE_ZONE: f32 = 4.0;
+pub const CLIP_RENDER_EPSILON: f32 = 5.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct TimelineTf {
@@ -118,14 +118,14 @@ impl<'a> Sequencer<'a> {
         let new_state = match cursor_mode {
             ClipPointerIntent::Move => SequencerState::MoveClip {
                 clip_id,
-                start_pos: clip.pos,
+                start_pos: clip.pos as f32,
                 total_drag_delta: 0.0f32,
             },
             ClipPointerIntent::Resize { resize_left } => SequencerState::ResizeClip {
                 resize_left,
                 clip_id,
-                start_left: clip.pos,
-                start_right: clip.pos + clip.len,
+                start_left: clip.pos as f32,
+                start_right: (clip.pos + clip.len) as f32,
                 total_drag_delta: 0.0f32,
             },
         };
@@ -179,7 +179,7 @@ impl<'a> Sequencer<'a> {
         total_drag_delta += response.drag_delta().x;
 
         let clip = &mut self.clips[clip_id];
-        clip.pos = start_pos + self.tf.inv_tf_vector(total_drag_delta);
+        clip.pos = (start_pos + self.tf.inv_tf_vector(total_drag_delta)) as u32;
         *self.state = SequencerState::MoveClip {
             clip_id,
             start_pos,
@@ -207,20 +207,24 @@ impl<'a> Sequencer<'a> {
         }
         total_drag_delta += response.drag_delta().x;
 
-        let size_delta = self.tf.inv_tf_vector(total_drag_delta);
+        let final_size_delta = self.tf.inv_tf_vector(total_drag_delta);
         let (mut final_left, mut final_right) = (start_left, start_right);
         if resize_left {
-            final_left += size_delta;
+            final_left = f32::min(final_right - 1.0, final_left + final_size_delta);
         } else {
-            final_right += size_delta;
+            final_right = f32::max(final_left + 1.0, final_right + final_size_delta);
         };
-        if final_right - final_left < CLIP_MIN_SIZE {
-            return;
-        }
 
         let clip = &mut self.clips[clip_id];
-        clip.len = final_right - final_left;
-        clip.pos = final_left;
+        // We want to keep clip.len + clip.pos the same so
+        // the right doesn't jitter
+        let new_length = if resize_left {
+            (clip.pos + clip.len) as f32 - final_left.round()
+        } else {
+            (final_right - final_left).round()
+        };
+        clip.len = new_length as u32;
+        clip.pos = final_left.round() as u32;
         *self.state = SequencerState::ResizeClip {
             clip_id,
             start_left,
@@ -294,20 +298,21 @@ impl<'a> Sequencer<'a> {
 
 pub struct Clip {
     pub text: Option<WidgetText>,
-    pub pos: f32,
-    pub len: f32,
+    pub pos: u32,
+    pub len: u32,
 }
 
 impl Clip {
     pub fn rect(&self, timeline_rect: Rect, tf: TimelineTf) -> Rect {
         let top = timeline_rect.top();
-        let left = timeline_rect.left() + tf.tf_pos(self.pos);
-        let width = tf.tf_vector(self.len);
+        let left = timeline_rect.left() + tf.tf_pos(self.pos as f32);
+        let width = tf.tf_vector(self.len as f32);
 
         Rect::from_min_size(pos2(left, top), vec2(width, CLIP_HEIGHT))
     }
 
     pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, tf: TimelineTf) {
+        let padding = ui.spacing().button_padding;
         let this_rect = self.rect(timeline_rect, tf);
         let left_resize_rect = Rect {
             max: pos2(this_rect.min.x + CLIP_RESIZE_ZONE, this_rect.max.y),
@@ -318,14 +323,45 @@ impl Clip {
             ..this_rect
         };
         let move_rect = Rect {
-            min: pos2(this_rect.min.x + CLIP_RESIZE_ZONE * 0.5, this_rect.min.y),
-            max: pos2(this_rect.max.x - CLIP_RESIZE_ZONE * 0.5, this_rect.max.y),
+            min: pos2(this_rect.min.x + CLIP_RESIZE_ZONE, this_rect.min.y),
+            max: pos2(this_rect.max.x - CLIP_RESIZE_ZONE, this_rect.max.y),
         };
 
+        if this_rect.width() > 2.0 * CLIP_RESIZE_ZONE + CLIP_RENDER_EPSILON {
+            painter.rect_filled(left_resize_rect, 0.0, Color32::DARK_RED);
+            painter.rect_filled(right_resize_rect, 0.0, Color32::DARK_RED);
+            painter.rect_filled(move_rect, 0.0, Color32::RED);
+        } else {
+            let mini_rect_width = this_rect.width().max(CLIP_RENDER_EPSILON);
+            let mini_rect = Rect::from_min_size(
+                this_rect.min, 
+                vec2(mini_rect_width, this_rect.height())
+            );
+            painter.rect(
+                mini_rect,
+                0.0,
+                Color32::RED,
+                Stroke::new(1.0, Color32::DARK_RED),
+                egui::StrokeKind::Inside,
+            );
+        }
+
+        if move_rect.width() > 2.0 * padding.x + CLIP_RENDER_EPSILON {
+            let Some(text) = &self.text else { return };
+            let text_gal = text.clone().into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                move_rect.width() - 2.0 * padding.x,
+                TextStyle::Button,
+            );
+            let text_pos = ui
+                .layout()
+                .align_size_within_rect(text_gal.size(), move_rect.shrink2(padding))
+                .min;
+            painter.galley(text_pos, text_gal, Color32::WHITE);
+        }
+
         let border_stroke = ui.visuals().widgets.inactive.bg_stroke;
-        painter.rect_filled(left_resize_rect, 0.0, Color32::DARK_RED);
-        painter.rect_filled(right_resize_rect, 0.0, Color32::DARK_RED);
-        painter.rect_filled(move_rect, 0.0, Color32::RED);
         painter.rect(
             this_rect,
             0.0,
@@ -333,20 +369,6 @@ impl Clip {
             border_stroke,
             egui::StrokeKind::Inside,
         );
-
-        let padding = ui.spacing().button_padding;
-        let Some(text) = &self.text else { return };
-        let text_gal = text.clone().into_galley(
-            ui,
-            Some(egui::TextWrapMode::Truncate),
-            this_rect.width() - 2.0 * padding.x,
-            TextStyle::Button,
-        );
-        let text_pos = ui
-            .layout()
-            .align_size_within_rect(text_gal.size(), this_rect.shrink2(padding))
-            .min;
-        painter.galley(text_pos, text_gal, Color32::WHITE);
     }
 
     pub fn get_pointer_intent(
@@ -446,13 +468,13 @@ impl MyEguiApp {
             clips: vec![
                 Clip {
                     text: Some("lol".into()),
-                    pos: 10.0,
-                    len: 40.0,
+                    pos: 10,
+                    len: 20,
                 },
                 Clip {
                     text: Some("some event".into()),
-                    pos: 60.0,
-                    len: 60.0,
+                    pos: 60,
+                    len: 60,
                 },
             ],
             tf: TimelineTf {
