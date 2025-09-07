@@ -4,7 +4,7 @@ use egui::{
     WidgetText, epaint, pos2, vec2,
 };
 
-pub const PIXELS_PER_UNIT: f32 = 10.0;
+pub const PIXELS_PER_UNIT: f32 = 18.0;
 pub const CLIP_HEIGHT: f32 = 20.0;
 pub const CLIP_RESIZE_ZONE: f32 = 4.0;
 pub const CLIP_RENDER_EPSILON: f32 = 5.0;
@@ -257,23 +257,47 @@ impl<'a> Sequencer<'a> {
     }
 
     fn paint_timeline(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
-        painter.rect(
+        painter.rect_filled(
             timeline_rect,
             0.0,
             ui.visuals().noninteractive().bg_fill,
-            ui.visuals().noninteractive().fg_stroke,
-            epaint::StrokeKind::Inside,
         );
 
-        for section in 1..((timeline_rect.width() / PIXELS_PER_UNIT) as i32) {
-            let mark_x = timeline_rect.left() + self.tf.tf_pos(section as f32 * PIXELS_PER_UNIT);
+        let mut last_painted = None;
+        let mut painted_count = 0;
+        let contigious_paint = self.tf.tf_vector(1.0) >= PIXELS_PER_UNIT;
+        for section in 1..300 {
+            let local_pos = self.tf.tf_pos(section as f32);
+            let too_close = last_painted.map(|x| local_pos - x < PIXELS_PER_UNIT).unwrap_or(false); 
+            if too_close {
+                continue;
+            }
+
+            let mark_x = timeline_rect.left() + local_pos;
             let mark_points = [
                 pos2(mark_x, timeline_rect.top()),
                 pos2(mark_x, timeline_rect.bottom()),
             ];
-            let color = ui.visuals().weak_text_color();
-            painter.line_segment(mark_points, Stroke::new(1.0, color));
+            let color = if painted_count % 5 == 0 || contigious_paint {
+                ui.visuals().weak_text_color()
+            } else {
+                ui.visuals().extreme_bg_color
+            };
+            if local_pos >= 0.0 {
+                painter.line_segment(mark_points, Stroke::new(1.0, color));
+            }
+            
+            painted_count += 1;
+            last_painted = Some(local_pos);
         }
+        
+        painter.rect(
+            timeline_rect,
+            0.0,
+            Color32::TRANSPARENT,
+            ui.visuals().noninteractive().fg_stroke,
+            epaint::StrokeKind::Inside,
+        );
     }
 
     fn paint_clips(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
