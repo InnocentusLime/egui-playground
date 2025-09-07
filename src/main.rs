@@ -4,18 +4,6 @@ use egui::{
     WidgetText, epaint, pos2, vec2,
 };
 
-/*
-Sequencer (MVP):
-1. Draw a "grid" with tracking:
-    * Convert pointer coordinates to timeline index
-2. Add elements
-    * Should be able to move
-    * Should be able to stretch
-    * Everything should snap to the grid
-3. Scroll can be achieved with scroll-area (hopefully)
-4. Add tracks
-*/
-
 pub const PIXELS_PER_UNIT: f32 = 20.0;
 pub const CLIP_HEIGHT: f32 = 20.0;
 pub const CLIP_RESIZE_ZONE: f32 = 8.0;
