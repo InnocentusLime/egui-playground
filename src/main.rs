@@ -21,11 +21,30 @@ pub const CLIP_HEIGHT: f32 = 20.0;
 pub const CLIP_RESIZE_ZONE: f32 = 8.0;
 pub const CLIP_MIN_SIZE: f32 = 2.0 * CLIP_RESIZE_ZONE + 8.0;
 
+#[derive(Debug, Clone, Copy)]
+pub struct TimelineTf {
+    pub zoom: f32,
+    pub pan: f32,
+}
+
+impl TimelineTf {
+    pub fn tf_pos(&self, pos: f32) -> f32 {
+        self.zoom * (pos + self.pan)
+    }
+
+    pub fn tf_vector(&self, vec: f32) -> f32 {
+        self.zoom * vec
+    }
+
+    pub fn inv_tf_vector(&self, vec: f32) -> f32 {
+        vec / self.zoom
+    }
+}
+
 pub struct Sequencer<'a> {
     pub clips: &'a mut Vec<Clip>,
     pub state: &'a mut SequencerState,
-    pub zoom: &'a mut f32,
-    pub pan: &'a mut f32,
+    pub tf: &'a mut TimelineTf,
     pub size: Vec2,
 }
 
@@ -41,7 +60,9 @@ impl<'a> Sequencer<'a> {
                 clip_id,
                 start_pos,
                 total_drag_delta,
-            } => self.timeline_input_moving_clip(ui, response, clip_id, start_pos, total_drag_delta),
+            } => {
+                self.timeline_input_moving_clip(ui, response, clip_id, start_pos, total_drag_delta)
+            }
             SequencerState::ResizeClip {
                 clip_id,
                 start_left,
@@ -85,7 +106,7 @@ impl<'a> Sequencer<'a> {
         // Find a clip that the user is hovering on
         let Some((clip_id, clip, cursor_mode)) =
             self.clips.iter().enumerate().find_map(|(idx, clip)| {
-                clip.get_pointer_intent(timeline_rect, pointer, *self.zoom, *self.pan)
+                clip.get_pointer_intent(timeline_rect, pointer, *self.tf)
                     .map(|x| (idx, clip, x))
             })
         else {
@@ -136,9 +157,9 @@ impl<'a> Sequencer<'a> {
         });
 
         if plus_pressed {
-            *self.zoom *= 1.3f32;
+            self.tf.zoom *= 1.3f32;
         } else if minus_pressed {
-            *self.zoom /= 1.3f32;
+            self.tf.zoom /= 1.3f32;
         }
 
         if !middle_button_down && !space_down {
@@ -146,7 +167,7 @@ impl<'a> Sequencer<'a> {
         }
 
         *self.state = SequencerState::Pan {
-            start_pan: *self.pan,
+            start_pan: self.tf.pan,
             total_drag_delta: 0.0,
         };
     }
@@ -170,7 +191,7 @@ impl<'a> Sequencer<'a> {
         total_drag_delta += response.drag_delta().x;
 
         let clip = &mut self.clips[clip_id];
-        clip.pos = start_pos + total_drag_delta / *self.zoom;
+        clip.pos = start_pos + self.tf.inv_tf_vector(total_drag_delta);
         *self.state = SequencerState::MoveClip {
             clip_id,
             start_pos,
@@ -198,11 +219,12 @@ impl<'a> Sequencer<'a> {
         }
         total_drag_delta += response.drag_delta().x;
 
+        let size_delta = self.tf.inv_tf_vector(total_drag_delta);
         let (mut final_left, mut final_right) = (start_left, start_right);
         if resize_left {
-            final_left += total_drag_delta / *self.zoom;
+            final_left += size_delta;
         } else {
-            final_right += total_drag_delta / *self.zoom;
+            final_right += size_delta;
         };
         if final_right - final_left < CLIP_MIN_SIZE {
             return;
@@ -233,8 +255,8 @@ impl<'a> Sequencer<'a> {
             return;
         }
         total_drag_delta += ui.ctx().input(|inp| inp.pointer.delta().x);
-        *self.pan = start_pan + total_drag_delta / *self.zoom;
-        *self.pan = self.pan.min(0.0);
+        self.tf.pan = start_pan + self.tf.inv_tf_vector(total_drag_delta);
+        self.tf.pan = self.tf.pan.min(0.0);
 
         *self.state = SequencerState::Pan {
             start_pan,
@@ -252,8 +274,7 @@ impl<'a> Sequencer<'a> {
         );
 
         for section in 1..((timeline_rect.width() / PIXELS_PER_UNIT) as i32) {
-            let mark_x =
-                timeline_rect.left() + (*self.pan + section as f32 * PIXELS_PER_UNIT) * *self.zoom;
+            let mark_x = timeline_rect.left() + self.tf.tf_pos(section as f32 * PIXELS_PER_UNIT);
             let mark_points = [
                 pos2(mark_x, timeline_rect.top()),
                 pos2(mark_x, timeline_rect.bottom()),
@@ -265,7 +286,7 @@ impl<'a> Sequencer<'a> {
 
     fn paint_clips(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
         for clip in &*self.clips {
-            clip.paint(ui, painter, timeline_rect, *self.zoom, *self.pan);
+            clip.paint(ui, painter, timeline_rect, *self.tf);
         }
     }
 
@@ -290,18 +311,16 @@ pub struct Clip {
 }
 
 impl Clip {
-    pub fn rect(&self, timeline_rect: Rect, zoom: f32, pan: f32) -> Rect {
+    pub fn rect(&self, timeline_rect: Rect, tf: TimelineTf) -> Rect {
         let top = timeline_rect.top();
-        let left = timeline_rect.left() + pan * zoom;
+        let left = timeline_rect.left() + tf.tf_pos(self.pos);
+        let width = tf.tf_vector(self.len);
 
-        Rect::from_min_size(
-            pos2(left + self.pos * zoom, top),
-            vec2(self.len * zoom, CLIP_HEIGHT),
-        )
+        Rect::from_min_size(pos2(left, top), vec2(width, CLIP_HEIGHT))
     }
 
-    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, zoom: f32, pan: f32) {
-        let this_rect = self.rect(timeline_rect, zoom, pan);
+    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, tf: TimelineTf) {
+        let this_rect = self.rect(timeline_rect, tf);
         let left_resize_rect = Rect {
             max: pos2(this_rect.min.x + CLIP_RESIZE_ZONE, this_rect.max.y),
             ..this_rect
@@ -346,10 +365,9 @@ impl Clip {
         &self,
         timeline_rect: Rect,
         pointer: Pos2,
-        zoom: f32,
-        pan: f32,
+        tf: TimelineTf,
     ) -> Option<ClipPointerIntent> {
-        let this_rect = self.rect(timeline_rect, zoom, pan);
+        let this_rect = self.rect(timeline_rect, tf);
 
         if !this_rect.contains(pointer) {
             return None;
@@ -425,8 +443,7 @@ fn main() {
 
 struct MyEguiApp {
     sequencer_state: SequencerState,
-    zoom: f32,
-    pan: f32,
+    tf: TimelineTf,
     clips: Vec<Clip>,
 }
 
@@ -450,8 +467,10 @@ impl MyEguiApp {
                     len: 60.0,
                 },
             ],
-            zoom: 1.0,
-            pan: 0.0,
+            tf: TimelineTf {
+                zoom: 1.0,
+                pan: 0.0,
+            },
         }
     }
 }
@@ -467,8 +486,7 @@ impl eframe::App for MyEguiApp {
                     state: &mut self.sequencer_state,
                     clips: &mut self.clips,
                     size: Vec2::new(500.0, 200.0),
-                    zoom: &mut self.zoom,
-                    pan: &mut self.pan,
+                    tf: &mut self.tf,
                 }
                 .ui(ui);
                 ui.label("Hello world!");
