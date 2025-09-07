@@ -1,6 +1,7 @@
 use eframe::egui;
 use egui::{
-    epaint, pos2, vec2, Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
+    Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget,
+    WidgetText, epaint, pos2, vec2,
 };
 
 /*
@@ -16,7 +17,7 @@ Sequencer (MVP):
 */
 
 pub const PIXELS_PER_UNIT: f32 = 20.0;
-pub const ELEMENT_HEIGHT: f32 = 20.0;
+pub const CLIP_HEIGHT: f32 = 20.0;
 pub const CLIP_RESIZE_ZONE: f32 = 8.0;
 pub const CLIP_MIN_SIZE: f32 = 2.0 * CLIP_RESIZE_ZONE + 8.0;
 
@@ -24,6 +25,7 @@ pub struct Sequencer<'a> {
     pub clips: &'a mut Vec<Clip>,
     pub state: &'a mut SequencerState,
     pub zoom: &'a mut f32,
+    pub pan: &'a mut f32,
     pub size: Vec2,
 }
 
@@ -33,39 +35,32 @@ impl<'a> Sequencer<'a> {
             return;
         };
 
-        let zoom = ui.ctx().input(|input| if input.key_pressed(Key::Plus) {
-            Some(1.3f32)
-        } else if input.key_pressed(Key::Minus) {
-            Some((1.3f32).recip())
-        } else {
-            None
-        });
-        if let Some(zoom) = zoom {
-            *self.zoom *= zoom;
-        }
-
         match *self.state {
             SequencerState::Idle => self.timeline_input_idle(ui, response, timeline_rect, pointer),
             SequencerState::MoveClip {
-                clip_id: element_id,
+                clip_id,
                 start_pos,
-                total_drag_delta: total_drag,
-            } => self.timeline_input_moving_clip(ui, response, element_id, start_pos, total_drag),
+                total_drag_delta,
+            } => self.timeline_input_moving_clip(ui, response, clip_id, start_pos, total_drag_delta),
             SequencerState::ResizeClip {
-                clip_id: element_id,
+                clip_id,
                 start_left,
                 start_right,
-                total_drag_delta: total_drag,
+                total_drag_delta,
                 resize_left,
             } => self.timeline_input_resizing_clip(
                 ui,
                 response,
-                element_id,
+                clip_id,
                 start_left,
                 start_right,
-                total_drag,
+                total_drag_delta,
                 resize_left,
             ),
+            SequencerState::Pan {
+                start_pan,
+                total_drag_delta,
+            } => self.timeline_input_pan(ui, start_pan, total_drag_delta),
         }
     }
 
@@ -76,10 +71,21 @@ impl<'a> Sequencer<'a> {
         timeline_rect: Rect,
         pointer: Pos2,
     ) {
+        self.timeline_input_idle_clips(ui, response, timeline_rect, pointer);
+        self.timeline_input_idle_pan_and_zoom(ui);
+    }
+
+    fn timeline_input_idle_clips(
+        &mut self,
+        ui: &mut Ui,
+        response: &Response,
+        timeline_rect: Rect,
+        pointer: Pos2,
+    ) {
         // Find a clip that the user is hovering on
         let Some((clip_id, clip, cursor_mode)) =
             self.clips.iter().enumerate().find_map(|(idx, clip)| {
-                clip.get_pointer_intent(timeline_rect, pointer, *self.zoom)
+                clip.get_pointer_intent(timeline_rect, pointer, *self.zoom, *self.pan)
                     .map(|x| (idx, clip, x))
             })
         else {
@@ -88,10 +94,13 @@ impl<'a> Sequencer<'a> {
 
         match cursor_mode {
             ClipPointerIntent::Move => ui.ctx().set_cursor_icon(egui::CursorIcon::Grab),
-            ClipPointerIntent::Resize { .. } => ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+            ClipPointerIntent::Resize { .. } => {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal)
+            }
         }
 
-        let left_button_down = ui.ctx()
+        let left_button_down = ui
+            .ctx()
             .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
         // Switch state if the user actually started an interraction.
         if !response.is_pointer_button_down_on() || !left_button_down {
@@ -114,16 +123,45 @@ impl<'a> Sequencer<'a> {
         *self.state = new_state;
     }
 
+    fn timeline_input_idle_pan_and_zoom(&mut self, ui: &mut Ui) {
+        let mut middle_button_down = false;
+        let mut space_down = false;
+        let mut plus_pressed = false;
+        let mut minus_pressed = false;
+        ui.ctx().input(|i| {
+            middle_button_down = i.pointer.button_down(egui::PointerButton::Middle);
+            space_down = i.key_down(Key::Space);
+            plus_pressed = i.key_pressed(Key::Plus);
+            minus_pressed = i.key_pressed(Key::Minus);
+        });
+
+        if plus_pressed {
+            *self.zoom *= 1.3f32;
+        } else if minus_pressed {
+            *self.zoom /= 1.3f32;
+        }
+
+        if !middle_button_down && !space_down {
+            return;
+        }
+
+        *self.state = SequencerState::Pan {
+            start_pan: *self.pan,
+            total_drag_delta: 0.0,
+        };
+    }
+
     fn timeline_input_moving_clip(
         &mut self,
         ui: &mut Ui,
         response: &Response,
-        element_id: usize,
+        clip_id: usize,
         start_pos: f32,
         mut total_drag_delta: f32,
     ) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-        let left_button_down = ui.ctx()
+        let left_button_down = ui
+            .ctx()
             .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
         if !response.is_pointer_button_down_on() || !left_button_down {
             *self.state = SequencerState::Idle;
@@ -131,10 +169,10 @@ impl<'a> Sequencer<'a> {
         }
         total_drag_delta += response.drag_delta().x;
 
-        let element = &mut self.clips[element_id];
-        element.pos = start_pos + total_drag_delta / *self.zoom;
+        let clip = &mut self.clips[clip_id];
+        clip.pos = start_pos + total_drag_delta / *self.zoom;
         *self.state = SequencerState::MoveClip {
-            clip_id: element_id,
+            clip_id,
             start_pos,
             total_drag_delta,
         }
@@ -144,14 +182,15 @@ impl<'a> Sequencer<'a> {
         &mut self,
         ui: &mut Ui,
         response: &Response,
-        element_id: usize,
+        clip_id: usize,
         start_left: f32,
         start_right: f32,
         mut total_drag_delta: f32,
         resize_left: bool,
     ) {
         ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-        let left_button_down = ui.ctx()
+        let left_button_down = ui
+            .ctx()
             .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
         if !response.is_pointer_button_down_on() && !left_button_down {
             *self.state = SequencerState::Idle;
@@ -169,14 +208,36 @@ impl<'a> Sequencer<'a> {
             return;
         }
 
-        let element = &mut self.clips[element_id];
-        element.len = final_right - final_left;
-        element.pos = final_left;
+        let clip = &mut self.clips[clip_id];
+        clip.len = final_right - final_left;
+        clip.pos = final_left;
         *self.state = SequencerState::ResizeClip {
-            clip_id: element_id,
+            clip_id,
             start_left,
             start_right,
             resize_left,
+            total_drag_delta,
+        }
+    }
+
+    fn timeline_input_pan(&mut self, ui: &mut Ui, start_pan: f32, mut total_drag_delta: f32) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        let mut middle_button_down = false;
+        let mut space_down = false;
+        ui.ctx().input(|i| {
+            middle_button_down = i.pointer.button_down(egui::PointerButton::Middle);
+            space_down = i.key_down(Key::Space);
+        });
+        if !middle_button_down && !space_down {
+            *self.state = SequencerState::Idle;
+            return;
+        }
+        total_drag_delta += ui.ctx().input(|inp| inp.pointer.delta().x);
+        *self.pan = start_pan + total_drag_delta / *self.zoom;
+        *self.pan = self.pan.min(0.0);
+
+        *self.state = SequencerState::Pan {
+            start_pan,
             total_drag_delta,
         }
     }
@@ -191,7 +252,8 @@ impl<'a> Sequencer<'a> {
         );
 
         for section in 1..((timeline_rect.width() / PIXELS_PER_UNIT) as i32) {
-            let mark_x = timeline_rect.left() + section as f32 * PIXELS_PER_UNIT * *self.zoom;
+            let mark_x =
+                timeline_rect.left() + (*self.pan + section as f32 * PIXELS_PER_UNIT) * *self.zoom;
             let mark_points = [
                 pos2(mark_x, timeline_rect.top()),
                 pos2(mark_x, timeline_rect.bottom()),
@@ -203,7 +265,7 @@ impl<'a> Sequencer<'a> {
 
     fn paint_clips(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
         for clip in &*self.clips {
-            clip.paint(ui, painter, timeline_rect, *self.zoom);
+            clip.paint(ui, painter, timeline_rect, *self.zoom, *self.pan);
         }
     }
 
@@ -228,15 +290,18 @@ pub struct Clip {
 }
 
 impl Clip {
-    pub fn rect(&self, timeline_rect: Rect, zoom: f32) -> Rect {
+    pub fn rect(&self, timeline_rect: Rect, zoom: f32, pan: f32) -> Rect {
         let top = timeline_rect.top();
-        let left = timeline_rect.left();
+        let left = timeline_rect.left() + pan * zoom;
 
-        Rect::from_min_size(pos2(left + self.pos * zoom, top), vec2(self.len * zoom, ELEMENT_HEIGHT))
+        Rect::from_min_size(
+            pos2(left + self.pos * zoom, top),
+            vec2(self.len * zoom, CLIP_HEIGHT),
+        )
     }
 
-    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, zoom: f32) {
-        let this_rect = self.rect(timeline_rect, zoom);
+    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, zoom: f32, pan: f32) {
+        let this_rect = self.rect(timeline_rect, zoom, pan);
         let left_resize_rect = Rect {
             max: pos2(this_rect.min.x + CLIP_RESIZE_ZONE, this_rect.max.y),
             ..this_rect
@@ -282,8 +347,9 @@ impl Clip {
         timeline_rect: Rect,
         pointer: Pos2,
         zoom: f32,
+        pan: f32,
     ) -> Option<ClipPointerIntent> {
-        let this_rect = self.rect(timeline_rect, zoom);
+        let this_rect = self.rect(timeline_rect, zoom, pan);
 
         if !this_rect.contains(pointer) {
             return None;
@@ -321,6 +387,10 @@ pub enum SequencerState {
         resize_left: bool,
         total_drag_delta: f32,
     },
+    Pan {
+        start_pan: f32,
+        total_drag_delta: f32,
+    },
 }
 
 impl<'a> Widget for Sequencer<'a> {
@@ -356,7 +426,8 @@ fn main() {
 struct MyEguiApp {
     sequencer_state: SequencerState,
     zoom: f32,
-    elements: Vec<Clip>,
+    pan: f32,
+    clips: Vec<Clip>,
 }
 
 impl MyEguiApp {
@@ -367,7 +438,7 @@ impl MyEguiApp {
         // for e.g. egui::PaintCallback.
         Self {
             sequencer_state: SequencerState::Idle,
-            elements: vec![
+            clips: vec![
                 Clip {
                     text: Some("lol".into()),
                     pos: 10.0,
@@ -380,6 +451,7 @@ impl MyEguiApp {
                 },
             ],
             zoom: 1.0,
+            pan: 0.0,
         }
     }
 }
@@ -393,9 +465,10 @@ impl eframe::App for MyEguiApp {
                 let _ = ui.button("lol");
                 Sequencer {
                     state: &mut self.sequencer_state,
-                    clips: &mut self.elements,
+                    clips: &mut self.clips,
                     size: Vec2::new(500.0, 200.0),
                     zoom: &mut self.zoom,
+                    pan: &mut self.pan,
                 }
                 .ui(ui);
                 ui.label("Hello world!");
