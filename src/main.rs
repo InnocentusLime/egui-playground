@@ -30,7 +30,7 @@ impl TimelineTf {
 }
 
 pub struct Sequencer<'a> {
-    pub clips: &'a mut Vec<Clip>,
+    pub clips: &'a mut Clips,
     pub state: &'a mut SequencerState,
     pub tf: &'a mut TimelineTf,
     pub size: Vec2,
@@ -178,8 +178,9 @@ impl<'a> Sequencer<'a> {
         }
         total_drag_delta += response.drag_delta().x;
 
-        let clip = &mut self.clips[clip_id];
-        clip.pos = (start_pos + self.tf.inv_tf_vector(total_drag_delta)) as u32;
+        let new_pos = (start_pos + self.tf.inv_tf_vector(total_drag_delta)) as u32;
+        let new_len = self.clips.get(clip_id).len;
+        self.clips.set_clip_pos_len(clip_id, new_pos, new_len);
         *self.state = SequencerState::MoveClip {
             clip_id,
             start_pos,
@@ -215,16 +216,17 @@ impl<'a> Sequencer<'a> {
             final_right = f32::max(final_left + 1.0, final_right + final_size_delta);
         };
 
-        let clip = &mut self.clips[clip_id];
+        let clip = self.clips.get(clip_id);
         // We want to keep clip.len + clip.pos the same so
         // the right doesn't jitter
-        let new_length = if resize_left {
+        let new_len = if resize_left {
             (clip.pos + clip.len) as f32 - final_left.round()
         } else {
             (final_right - final_left).round()
         };
-        clip.len = new_length as u32;
-        clip.pos = final_left.round() as u32;
+        let new_pos = final_left.round() as u32;
+        self.clips
+            .set_clip_pos_len(clip_id, new_pos, new_len as u32);
         *self.state = SequencerState::ResizeClip {
             clip_id,
             start_left,
@@ -257,18 +259,16 @@ impl<'a> Sequencer<'a> {
     }
 
     fn paint_timeline(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
-        painter.rect_filled(
-            timeline_rect,
-            0.0,
-            ui.visuals().noninteractive().bg_fill,
-        );
+        painter.rect_filled(timeline_rect, 0.0, ui.visuals().noninteractive().bg_fill);
 
         let mut last_painted = None;
         let mut painted_count = 0;
         let contigious_paint = self.tf.tf_vector(1.0) >= PIXELS_PER_UNIT;
         for section in 1..300 {
             let local_pos = self.tf.tf_pos(section as f32);
-            let too_close = last_painted.map(|x| local_pos - x < PIXELS_PER_UNIT).unwrap_or(false); 
+            let too_close = last_painted
+                .map(|x| local_pos - x < PIXELS_PER_UNIT)
+                .unwrap_or(false);
             if too_close {
                 continue;
             }
@@ -286,11 +286,11 @@ impl<'a> Sequencer<'a> {
             if local_pos >= 0.0 {
                 painter.line_segment(mark_points, Stroke::new(1.0, color));
             }
-            
+
             painted_count += 1;
             last_painted = Some(local_pos);
         }
-        
+
         painter.rect(
             timeline_rect,
             0.0,
@@ -301,7 +301,7 @@ impl<'a> Sequencer<'a> {
     }
 
     fn paint_clips(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
-        for clip in &*self.clips {
+        for clip in self.clips.iter() {
             clip.paint(ui, painter, timeline_rect, *self.tf);
         }
     }
@@ -317,6 +317,43 @@ impl<'a> Sequencer<'a> {
             ],
             Stroke::new(1.0, Color32::RED),
         );
+    }
+}
+
+pub struct Clips {
+    mem: Vec<Clip>,
+}
+
+impl Clips {
+    pub fn set_clip_pos_len(&mut self, idx: usize, new_pos: u32, new_len: u32) {
+        if self.clip_has_intersection(idx, new_pos, new_len) {
+            return;
+        }
+        self.mem[idx].pos = new_pos;
+        self.mem[idx].len = new_len;
+    }
+
+    fn get(&self, idx: usize) -> &Clip {
+        &self.mem[idx]
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &Clip> {
+        self.mem.iter()
+    }
+
+    fn clip_has_intersection(&self, skip: usize, pos: u32, len: u32) -> bool {
+        for (idx, clip) in self.mem.iter().enumerate() {
+            if idx == skip {
+                continue;
+            }
+            if clip.pos <= pos && clip.pos + clip.len > pos {
+                return true;
+            }
+            if pos <= clip.pos && pos + len > clip.pos {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -357,10 +394,8 @@ impl Clip {
             painter.rect_filled(move_rect, 0.0, Color32::RED);
         } else {
             let mini_rect_width = this_rect.width().max(CLIP_RENDER_EPSILON);
-            let mini_rect = Rect::from_min_size(
-                this_rect.min, 
-                vec2(mini_rect_width, this_rect.height())
-            );
+            let mini_rect =
+                Rect::from_min_size(this_rect.min, vec2(mini_rect_width, this_rect.height()));
             painter.rect(
                 mini_rect,
                 0.0,
@@ -478,7 +513,7 @@ fn main() {
 struct MyEguiApp {
     sequencer_state: SequencerState,
     tf: TimelineTf,
-    clips: Vec<Clip>,
+    clips: Clips,
 }
 
 impl MyEguiApp {
@@ -487,20 +522,22 @@ impl MyEguiApp {
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
+        let mem = vec![
+            Clip {
+                text: Some("lol".into()),
+                pos: 10,
+                len: 20,
+            },
+            Clip {
+                text: Some("some event".into()),
+                pos: 60,
+                len: 60,
+            },
+        ];
+
         Self {
             sequencer_state: SequencerState::Idle,
-            clips: vec![
-                Clip {
-                    text: Some("lol".into()),
-                    pos: 10,
-                    len: 20,
-                },
-                Clip {
-                    text: Some("some event".into()),
-                    pos: 60,
-                    len: 60,
-                },
-            ],
+            clips: Clips { mem },
             tf: TimelineTf {
                 zoom: 1.0,
                 pan: 0.0,
