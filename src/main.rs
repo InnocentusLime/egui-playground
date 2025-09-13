@@ -1,7 +1,6 @@
 use eframe::egui;
 use egui::{
-    Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextStyle, Ui, Vec2, Vec2b, Widget,
-    WidgetText, epaint, pos2, vec2,
+    epaint, pos2, vec2, Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
 };
 
 pub const PIXELS_PER_UNIT: f32 = 18.0;
@@ -350,14 +349,14 @@ impl Clips {
         Clips { next_id: 0, mem: Vec::new() }
     }
 
-    pub fn add_clip(&mut self, text: Option<WidgetText>, pos: u32, len: u32) -> bool {
+    pub fn add_clip(&mut self, label: WidgetText, pos: u32, len: u32) -> bool {
         if self.clip_has_intersection(u32::MAX, pos, len) {
             return false;
         }
 
         self.mem.push(Clip { 
             id: self.next_id, 
-            text, 
+            label, 
             pos, 
             len, 
         });
@@ -403,7 +402,7 @@ impl Clips {
 
 pub struct Clip {
     pub id: u32,
-    pub text: Option<WidgetText>,
+    pub label: WidgetText,
     pub pos: u32,
     pub len: u32,
 }
@@ -451,8 +450,7 @@ impl Clip {
         }
 
         if move_rect.width() > 2.0 * padding.x + CLIP_RENDER_EPSILON {
-            let Some(text) = &self.text else { return };
-            let text_gal = text.clone().into_galley(
+            let text_gal = self.label.clone().into_galley(
                 ui,
                 Some(egui::TextWrapMode::Truncate),
                 move_rect.width() - 2.0 * padding.x,
@@ -560,6 +558,7 @@ struct MyEguiApp {
     tf: TimelineTf,
     clips: Clips,
     cursor_pos: u32,
+    clip_label: String,
 }
 
 impl MyEguiApp {
@@ -569,13 +568,14 @@ impl MyEguiApp {
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
         let mut clips = Clips::new();
-        clips.add_clip(Some("lol".into()), 10, 20);
-        clips.add_clip(Some("some event".into()), 60, 60);
+        clips.add_clip("lol".into(), 10, 20);
+        clips.add_clip("some event".into(), 60, 60);
 
         Self {
             sequencer_state: SequencerState::Idle,
             clips,
             cursor_pos: 0,
+            clip_label: String::new(),
             tf: TimelineTf {
                 zoom: 1.0,
                 pan: 0.0,
@@ -591,6 +591,16 @@ impl eframe::App for MyEguiApp {
             .show(ctx, |ui| {
                 ui.label("Hello world!");
                 let _ = ui.button("lol");
+
+                ui.horizontal(|ui| {
+                    TextEdit::singleline(&mut self.clip_label)
+                        .desired_width(150.0)
+                        .ui(ui);
+                    if ui.button("add clip").clicked() {
+                        self.clips.add_clip(self.clip_label.as_str().into(), self.cursor_pos, 30);
+                    }
+                });
+
                 Sequencer {
                     state: &mut self.sequencer_state,
                     clips: &mut self.clips,
