@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{
-    epaint, pos2, vec2, Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
+    epaint, pos2, vec2, Button, Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
 };
 
 pub const PIXELS_PER_UNIT: f32 = 18.0;
@@ -34,6 +34,7 @@ impl TimelineTf {
 
 pub struct Sequencer<'a> {
     pub cursor_pos: &'a mut u32,
+    pub selected_clip: &'a mut Option<u32>,
     pub clips: &'a mut Clips,
     pub state: &'a mut SequencerState,
     pub tf: &'a mut TimelineTf,
@@ -45,6 +46,12 @@ impl<'a> Sequencer<'a> {
         let Some(pointer) = response.hover_pos() else {
             return;
         };
+        
+        if let Some(selected_clip) = self.selected_clip.clone() {
+            if self.clips.get(selected_clip).is_none() {
+                *self.selected_clip = None;
+            }
+        }
 
         match *self.state {
             SequencerState::Idle => self.timeline_input_idle(ui, response, timeline_rect, pointer),
@@ -96,6 +103,14 @@ impl<'a> Sequencer<'a> {
         timeline_rect: Rect,
         pointer: Pos2,
     ) {
+        let left_button_down = ui
+            .ctx()
+            .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+        if left_button_down {
+            let pos = self.tf.inv_tf_pos(pointer.x - timeline_rect.left()).round() as u32; 
+            *self.selected_clip = self.clips.clip_containing_pos(pos).map(|x| x.id);
+        }
+        
         // Find a clip that the user is hovering on
         let Some((clip, cursor_mode)) =
             self.clips.iter().find_map(|clip| {
@@ -113,9 +128,6 @@ impl<'a> Sequencer<'a> {
             }
         }
 
-        let left_button_down = ui
-            .ctx()
-            .input(|i| i.pointer.button_down(egui::PointerButton::Primary));
         // Switch state if the user actually started an interraction.
         if !response.is_pointer_button_down_on() || !left_button_down {
             return;
@@ -323,7 +335,8 @@ impl<'a> Sequencer<'a> {
 
     fn paint_clips(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
         for clip in self.clips.iter() {
-            clip.paint(ui, painter, timeline_rect, *self.tf);
+            let selected = self.selected_clip.clone().map(|x| x == clip.id).unwrap_or_default();
+            clip.paint(ui, painter, timeline_rect, *self.tf, selected);
         }
     }
 
@@ -364,6 +377,10 @@ impl Clips {
         true
     }
 
+    pub fn delete_clip(&mut self, idx: u32) {
+        self.mem.retain(|x| x.id != idx);
+    }
+
     pub fn set_clip_pos_len(&mut self, idx: u32, new_pos: u32, new_len: u32) {
         if self.clip_has_intersection(idx, new_pos, new_len) {
             return;
@@ -378,6 +395,10 @@ impl Clips {
 
     pub fn get(&self, idx: u32) -> Option<&Clip> {
         self.mem.iter().find(|x| x.id == idx)
+    }
+
+    pub fn clip_containing_pos(&self, pos: u32) -> Option<&Clip> {
+        self.mem.iter().find(|x| x.pos <= pos && pos <= x.pos + x.len)
     }
 
     fn iter(&self) -> impl Iterator<Item = &Clip> {
@@ -416,7 +437,7 @@ impl Clip {
         Rect::from_min_size(pos2(left, top), vec2(width, CLIP_HEIGHT))
     }
 
-    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, tf: TimelineTf) {
+    pub fn paint(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect, tf: TimelineTf, selected: bool) {
         let padding = ui.spacing().button_padding;
         let this_rect = self.rect(timeline_rect, tf);
         let left_resize_rect = Rect {
@@ -436,6 +457,15 @@ impl Clip {
             painter.rect_filled(left_resize_rect, 0.0, Color32::DARK_RED);
             painter.rect_filled(right_resize_rect, 0.0, Color32::DARK_RED);
             painter.rect_filled(move_rect, 0.0, Color32::RED);
+            if selected {
+                painter.rect(
+                    this_rect,
+                    0.0,
+                    Color32::TRANSPARENT,
+                    ui.visuals().selection.stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
         } else {
             let mini_rect_width = this_rect.width().max(CLIP_RENDER_EPSILON);
             let mini_rect =
@@ -447,6 +477,15 @@ impl Clip {
                 Stroke::new(1.0, Color32::DARK_RED),
                 egui::StrokeKind::Inside,
             );
+            if selected {
+                painter.rect(
+                    mini_rect,
+                    0.0,
+                    Color32::TRANSPARENT,
+                    ui.visuals().selection.stroke,
+                    egui::StrokeKind::Inside,
+                );
+            }
         }
 
         if move_rect.width() > 2.0 * padding.x + CLIP_RENDER_EPSILON {
@@ -559,6 +598,7 @@ struct MyEguiApp {
     clips: Clips,
     cursor_pos: u32,
     clip_label: String,
+    selected_clip: Option<u32>,
 }
 
 impl MyEguiApp {
@@ -576,6 +616,7 @@ impl MyEguiApp {
             clips,
             cursor_pos: 0,
             clip_label: String::new(),
+            selected_clip: None,
             tf: TimelineTf {
                 zoom: 1.0,
                 pan: 0.0,
@@ -599,6 +640,12 @@ impl eframe::App for MyEguiApp {
                     if ui.button("add clip").clicked() {
                         self.clips.add_clip(self.clip_label.as_str().into(), self.cursor_pos, 30);
                     }
+                    let resp = ui.add_enabled(self.selected_clip.is_some(), Button::new("delete clip"));
+                    if let Some(idx) = self.selected_clip {
+                        if resp.clicked() {
+                            self.clips.delete_clip(idx);
+                        }
+                    }
                 });
 
                 Sequencer {
@@ -607,6 +654,7 @@ impl eframe::App for MyEguiApp {
                     cursor_pos: &mut self.cursor_pos,
                     size: Vec2::new(500.0, 200.0),
                     tf: &mut self.tf,
+                    selected_clip: &mut self.selected_clip,
                 }
                 .ui(ui);
                 ui.label("Hello world!");
