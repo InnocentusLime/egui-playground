@@ -27,9 +27,14 @@ impl TimelineTf {
     pub fn inv_tf_vector(&self, vec: f32) -> f32 {
         vec / self.zoom
     }
+
+    pub fn inv_tf_pos(&self, pos: f32) -> f32 {
+        pos / self.zoom - self.pan
+    }
 }
 
 pub struct Sequencer<'a> {
+    pub cursor_pos: &'a mut u32,
     pub clips: &'a mut Clips,
     pub state: &'a mut SequencerState,
     pub tf: &'a mut TimelineTf,
@@ -82,6 +87,7 @@ impl<'a> Sequencer<'a> {
     ) {
         self.timeline_input_idle_clips(ui, response, timeline_rect, pointer);
         self.timeline_input_idle_pan_and_zoom(ui);
+        self.timeline_input_idle_cursor(response, timeline_rect);
     }
 
     fn timeline_input_idle_clips(
@@ -158,6 +164,15 @@ impl<'a> Sequencer<'a> {
             start_pan: self.tf.pan,
             total_drag_delta: 0.0,
         };
+    }
+
+    fn timeline_input_idle_cursor(&mut self, response: &Response, timeline_rect: Rect) {
+        let Some(pos) = response.interact_pointer_pos() else {
+            return;
+        };
+        if response.clicked() {
+            *self.cursor_pos = self.tf.inv_tf_pos(pos.x - timeline_rect.left()).round() as u32;
+        }
     }
 
     fn timeline_input_moving_clip(
@@ -313,14 +328,12 @@ impl<'a> Sequencer<'a> {
         }
     }
 
-    fn paint_timeline_cursor(&self, response: &Response, painter: &Painter, timeline_rect: Rect) {
-        let Some(hover) = response.hover_pos() else {
-            return;
-        };
+    fn paint_timeline_cursor(&self, painter: &Painter, timeline_rect: Rect) {
+        let cur_x = self.tf.tf_pos(*self.cursor_pos as f32) + timeline_rect.left();
         painter.line_segment(
             [
-                pos2(hover.x, timeline_rect.top()),
-                pos2(hover.x, timeline_rect.bottom()),
+                pos2(cur_x, timeline_rect.top()),
+                pos2(cur_x, timeline_rect.bottom()),
             ],
             Stroke::new(1.0, Color32::RED),
         );
@@ -524,7 +537,7 @@ impl<'a> Widget for Sequencer<'a> {
 
         self.paint_timeline(ui, &painter, timeline_rect);
         self.paint_clips(ui, &painter, timeline_rect);
-        self.paint_timeline_cursor(&response, &painter, timeline_rect);
+        self.paint_timeline_cursor(&painter, timeline_rect);
 
         response
     }
@@ -546,6 +559,7 @@ struct MyEguiApp {
     sequencer_state: SequencerState,
     tf: TimelineTf,
     clips: Clips,
+    cursor_pos: u32,
 }
 
 impl MyEguiApp {
@@ -561,6 +575,7 @@ impl MyEguiApp {
         Self {
             sequencer_state: SequencerState::Idle,
             clips,
+            cursor_pos: 0,
             tf: TimelineTf {
                 zoom: 1.0,
                 pan: 0.0,
@@ -579,6 +594,7 @@ impl eframe::App for MyEguiApp {
                 Sequencer {
                     state: &mut self.sequencer_state,
                     clips: &mut self.clips,
+                    cursor_pos: &mut self.cursor_pos,
                     size: Vec2::new(500.0, 200.0),
                     tf: &mut self.tf,
                 }
