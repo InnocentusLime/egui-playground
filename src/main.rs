@@ -92,10 +92,10 @@ impl<'a> Sequencer<'a> {
         pointer: Pos2,
     ) {
         // Find a clip that the user is hovering on
-        let Some((clip_id, clip, cursor_mode)) =
-            self.clips.iter().enumerate().find_map(|(idx, clip)| {
+        let Some((clip, cursor_mode)) =
+            self.clips.iter().find_map(|clip| {
                 clip.get_pointer_intent(timeline_rect, pointer, *self.tf)
-                    .map(|x| (idx, clip, x))
+                    .map(|x| (clip, x))
             })
         else {
             return;
@@ -117,13 +117,13 @@ impl<'a> Sequencer<'a> {
         }
         let new_state = match cursor_mode {
             ClipPointerIntent::Move => SequencerState::MoveClip {
-                clip_id,
+                clip_id: clip.id,
                 start_pos: clip.pos as f32,
                 total_drag_delta: 0.0f32,
             },
             ClipPointerIntent::Resize { resize_left } => SequencerState::ResizeClip {
+                clip_id: clip.id,
                 resize_left,
-                clip_id,
                 start_left: clip.pos as f32,
                 start_right: (clip.pos + clip.len) as f32,
                 total_drag_delta: 0.0f32,
@@ -164,7 +164,7 @@ impl<'a> Sequencer<'a> {
         &mut self,
         ui: &mut Ui,
         response: &Response,
-        clip_id: usize,
+        clip_id: u32,
         start_pos: f32,
         mut total_drag_delta: f32,
     ) {
@@ -178,8 +178,12 @@ impl<'a> Sequencer<'a> {
         }
         total_drag_delta += response.drag_delta().x;
 
+        let Some(clip) = self.clips.get(clip_id) else {
+            *self.state = SequencerState::Idle;
+            return;
+        };
         let new_pos = (start_pos + self.tf.inv_tf_vector(total_drag_delta)) as u32;
-        let new_len = self.clips.get(clip_id).len;
+        let new_len = clip.len;
         self.clips.set_clip_pos_len(clip_id, new_pos, new_len);
         *self.state = SequencerState::MoveClip {
             clip_id,
@@ -192,7 +196,7 @@ impl<'a> Sequencer<'a> {
         &mut self,
         ui: &mut Ui,
         response: &Response,
-        clip_id: usize,
+        clip_id: u32,
         start_left: f32,
         start_right: f32,
         mut total_drag_delta: f32,
@@ -216,7 +220,10 @@ impl<'a> Sequencer<'a> {
             final_right = f32::max(final_left + 1.0, final_right + final_size_delta);
         };
 
-        let clip = self.clips.get(clip_id);
+        let Some(clip) = self.clips.get(clip_id) else {
+            *self.state = SequencerState::Idle;
+            return;
+        };
         // We want to keep clip.len + clip.pos the same so
         // the right doesn't jitter
         let new_len = if resize_left {
@@ -321,29 +328,53 @@ impl<'a> Sequencer<'a> {
 }
 
 pub struct Clips {
+    next_id: u32,
     mem: Vec<Clip>,
 }
 
 impl Clips {
-    pub fn set_clip_pos_len(&mut self, idx: usize, new_pos: u32, new_len: u32) {
+    pub fn new() -> Clips {
+        Clips { next_id: 0, mem: Vec::new() }
+    }
+
+    pub fn add_clip(&mut self, text: Option<WidgetText>, pos: u32, len: u32) -> bool {
+        if self.clip_has_intersection(u32::MAX, pos, len) {
+            return false;
+        }
+
+        self.mem.push(Clip { 
+            id: self.next_id, 
+            text, 
+            pos, 
+            len, 
+        });
+        self.next_id += 1;
+        true
+    }
+
+    pub fn set_clip_pos_len(&mut self, idx: u32, new_pos: u32, new_len: u32) {
         if self.clip_has_intersection(idx, new_pos, new_len) {
             return;
         }
-        self.mem[idx].pos = new_pos;
-        self.mem[idx].len = new_len;
+
+        let Some(clip) = self.mem.iter_mut().find(|x| x.id == idx)
+        else { return; };
+
+        clip.pos = new_pos;
+        clip.len = new_len;
     }
 
-    fn get(&self, idx: usize) -> &Clip {
-        &self.mem[idx]
+    pub fn get(&self, idx: u32) -> Option<&Clip> {
+        self.mem.iter().find(|x| x.id == idx)
     }
 
     fn iter(&self) -> impl Iterator<Item = &Clip> {
         self.mem.iter()
     }
 
-    fn clip_has_intersection(&self, skip: usize, pos: u32, len: u32) -> bool {
-        for (idx, clip) in self.mem.iter().enumerate() {
-            if idx == skip {
+    fn clip_has_intersection(&self, skip: u32, pos: u32, len: u32) -> bool {
+        for clip in self.mem.iter() {
+            if clip.id == skip {
                 continue;
             }
             if clip.pos <= pos && clip.pos + clip.len > pos {
@@ -358,6 +389,7 @@ impl Clips {
 }
 
 pub struct Clip {
+    pub id: u32,
     pub text: Option<WidgetText>,
     pub pos: u32,
     pub len: u32,
@@ -463,12 +495,12 @@ pub enum ClipPointerIntent {
 pub enum SequencerState {
     Idle,
     MoveClip {
-        clip_id: usize,
+        clip_id: u32,
         start_pos: f32,
         total_drag_delta: f32,
     },
     ResizeClip {
-        clip_id: usize,
+        clip_id: u32,
         start_left: f32,
         start_right: f32,
         resize_left: bool,
@@ -522,22 +554,13 @@ impl MyEguiApp {
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
-        let mem = vec![
-            Clip {
-                text: Some("lol".into()),
-                pos: 10,
-                len: 20,
-            },
-            Clip {
-                text: Some("some event".into()),
-                pos: 60,
-                len: 60,
-            },
-        ];
+        let mut clips = Clips::new();
+        clips.add_clip(Some("lol".into()), 10, 20);
+        clips.add_clip(Some("some event".into()), 60, 60);
 
         Self {
             sequencer_state: SequencerState::Idle,
-            clips: Clips { mem },
+            clips,
             tf: TimelineTf {
                 zoom: 1.0,
                 pan: 0.0,
