@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::{
-    epaint, pos2, vec2, Button, Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
+    epaint, pos2, vec2, Area, Button, Color32, Key, Label, Painter, Pos2, Rect, Response, Sense, Stroke, TextEdit, TextStyle, Ui, Vec2, Vec2b, Widget, WidgetText
 };
 
 pub const PIXELS_PER_UNIT: f32 = 18.0;
@@ -630,8 +630,21 @@ impl eframe::App for MyEguiApp {
         egui::Window::new("My Window")
             .resizable(Vec2b::new(true, true))
             .show(ctx, |ui| {
-                ui.label("Hello world!");
-                let _ = ui.button("lol");
+                ui.group(|ui| {
+                    ui.set_min_size(vec2(200.0, 150.0));
+                    if let Some(clip) = self.selected_clip {
+                        match self.clips.get(clip) {
+                            None => self.selected_clip = None,
+                            Some(clip) => {
+                                ui.label(clip.label.clone());
+                                ui.label(format!("Pos: {}", clip.pos));
+                                ui.label(format!("Length: {}", clip.len));
+                            },
+                        }
+                    } else {
+                        ui.add_enabled(false, Label::new("No clip selected"));
+                    }
+                });
 
                 ui.horizontal(|ui| {
                     TextEdit::singleline(&mut self.clip_label)
@@ -657,7 +670,6 @@ impl eframe::App for MyEguiApp {
                     selected_clip: &mut self.selected_clip,
                 }
                 .ui(ui);
-                ui.label("Hello world!");
             });
     }
 }
