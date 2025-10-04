@@ -1,5 +1,5 @@
 use eframe::egui;
-use egui::{Button, Label, TextEdit, Vec2, Vec2b, Widget, vec2};
+use egui::{Button, Color32, Label, TextEdit, Vec2, Vec2b, Widget, vec2};
 
 use crate::sequencer::{Clips, Sequencer, SequencerState, TimelineTf};
 
@@ -33,8 +33,11 @@ impl MyEguiApp {
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
         let mut clips = Clips::new();
-        clips.add_clip("lol".into(), 10, 20);
-        clips.add_clip("some event".into(), 60, 60);
+        clips.add_track("red events".into(), Color32::RED);
+        clips.add_track("yellow events".into(),Color32::YELLOW);
+        clips.add_clip(0, "lol".into(), 10, 30);
+        clips.add_clip(0, "some event".into(), 60, 60);
+        clips.add_clip(1, "lol2".into(), 20, 40);
 
         Self {
             sequencer_state: SequencerState::Idle,
@@ -76,8 +79,12 @@ impl eframe::App for MyEguiApp {
                         .desired_width(150.0)
                         .ui(ui);
                     if ui.button("add clip").clicked() {
-                        self.clips
-                            .add_clip(self.clip_label.as_str().into(), self.cursor_pos, 30);
+                        self.clips.add_clip(
+                            0,
+                            self.clip_label.as_str().into(),
+                            self.cursor_pos,
+                            30,
+                        );
                     }
                     let resp =
                         ui.add_enabled(self.selected_clip.is_some(), Button::new("delete clip"));
