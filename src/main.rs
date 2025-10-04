@@ -23,6 +23,8 @@ struct MyEguiApp {
     clips: Clips,
     cursor_pos: u32,
     clip_label: String,
+    track_label: String,
+    track_color: [f32; 3],
     selected_clip: Option<u32>,
     selected_track: Option<u32>,
 }
@@ -47,6 +49,8 @@ impl MyEguiApp {
             clip_label: String::new(),
             selected_clip: None,
             selected_track: None,
+            track_label: String::new(),
+            track_color: [1.0; 3],
             tf: TimelineTf {
                 zoom: 1.0,
                 pan: 0.0,
@@ -100,6 +104,29 @@ impl eframe::App for MyEguiApp {
                     if let Some(idx) = self.selected_clip {
                         if resp.clicked() {
                             self.clips.delete_clip(idx);
+                        }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.color_edit_button_rgb(&mut self.track_color);
+                    TextEdit::singleline(&mut self.track_label)
+                        .desired_width(100.0)
+                        .ui(ui);
+
+                    if ui.button("Add track").clicked() {
+                        self.clips.add_track(self.track_label.clone().into(), Color32::from_rgb(
+                            (self.track_color[0] * 255.0) as u8, 
+                            (self.track_color[1] * 255.0) as u8, 
+                            (self.track_color[2] * 255.0) as u8,
+                        ));
+                    }
+
+                    let resp =
+                        ui.add_enabled(self.selected_track.is_some(), Button::new("delete track"));
+                    if let Some(idx) = self.selected_track {
+                        if resp.clicked() {
+                            self.clips.delete_track(idx);
                         }
                     }
                 });
