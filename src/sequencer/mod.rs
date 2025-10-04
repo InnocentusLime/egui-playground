@@ -1,6 +1,6 @@
 mod clips;
 
-use egui::epaint;
+use egui::{epaint, vec2};
 use egui::{Color32, Key, Painter, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2, Widget, pos2};
 
 pub use clips::*;
@@ -57,6 +57,7 @@ pub enum SequencerState {
 pub struct Sequencer<'a> {
     pub cursor_pos: &'a mut u32,
     pub selected_clip: &'a mut Option<u32>,
+    pub selected_track: &'a mut Option<u32>,
     pub clips: &'a mut Clips,
     pub state: &'a mut SequencerState,
     pub tf: &'a mut TimelineTf,
@@ -208,8 +209,10 @@ impl<'a> Sequencer<'a> {
         let Some(pos) = response.interact_pointer_pos() else {
             return;
         };
+        let y_pos = ((pos.y - timeline_rect.top()) / CLIP_HEIGHT) as u32;
         if response.clicked() {
             *self.cursor_pos = self.tf.inv_tf_pos(pos.x - timeline_rect.left()).round() as u32;
+            *self.selected_track = self.clips.track_containing_pos(y_pos);
         }
     }
 
@@ -328,6 +331,18 @@ impl<'a> Sequencer<'a> {
 
     fn paint_timeline(&self, ui: &Ui, painter: &Painter, timeline_rect: Rect) {
         painter.rect_filled(timeline_rect, 0.0, ui.visuals().noninteractive().bg_fill);
+
+        let track = self.selected_track.and_then(|idx| self.clips.get_track(idx));
+        if let Some(track) = track {
+            let dark_color = Color32::BLACK + track.color.additive().linear_multiply(0.05);
+            // let dark_color = Color32::WHITE;
+            let track_y = self.clips.track_y(track.id).unwrap();
+            let track_selection = Rect::from_min_size(
+                pos2(timeline_rect.left(), timeline_rect.top() + (track_y as f32) * CLIP_HEIGHT), 
+                vec2(timeline_rect.width(), CLIP_HEIGHT),
+            );
+            painter.rect_filled(track_selection, 0.0, dark_color); 
+        }
 
         let mut last_painted = None;
         let mut painted_count = 0;

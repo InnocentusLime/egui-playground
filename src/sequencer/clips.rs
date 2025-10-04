@@ -217,6 +217,10 @@ impl Clips {
         clip.len = new_len;
     }
 
+    pub fn get_track(&self, idx: u32) -> Option<&TrackInfo> {
+        self.tracks.iter().find(|x| x.id == idx)
+    }
+
     pub fn get(&self, idx: u32) -> Option<&Clip> {
         self.clips.iter().find(|x| x.id == idx)
     }

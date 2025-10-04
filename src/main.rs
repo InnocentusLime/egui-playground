@@ -24,6 +24,7 @@ struct MyEguiApp {
     cursor_pos: u32,
     clip_label: String,
     selected_clip: Option<u32>,
+    selected_track: Option<u32>,
 }
 
 impl MyEguiApp {
@@ -45,6 +46,7 @@ impl MyEguiApp {
             cursor_pos: 0,
             clip_label: String::new(),
             selected_clip: None,
+            selected_track: None,
             tf: TimelineTf {
                 zoom: 1.0,
                 pan: 0.0,
@@ -65,6 +67,7 @@ impl eframe::App for MyEguiApp {
                             None => self.selected_clip = None,
                             Some(clip) => {
                                 ui.label(clip.label.clone());
+                                ui.label(format!("Track: {}", clip.track_id));
                                 ui.label(format!("Pos: {}", clip.pos));
                                 ui.label(format!("Length: {}", clip.len));
                             }
@@ -78,14 +81,20 @@ impl eframe::App for MyEguiApp {
                     TextEdit::singleline(&mut self.clip_label)
                         .desired_width(150.0)
                         .ui(ui);
-                    if ui.button("add clip").clicked() {
-                        self.clips.add_clip(
-                            0,
-                            self.clip_label.as_str().into(),
-                            self.cursor_pos,
-                            30,
-                        );
+
+                    let resp =
+                        ui.add_enabled(self.selected_track.is_some(), Button::new("add clip"));
+                    if let Some(track_id) = self.selected_track {
+                        if resp.clicked() {
+                            self.clips.add_clip(
+                                track_id,
+                                self.clip_label.as_str().into(),
+                                self.cursor_pos,
+                                30,
+                            );
+                        }
                     }
+
                     let resp =
                         ui.add_enabled(self.selected_clip.is_some(), Button::new("delete clip"));
                     if let Some(idx) = self.selected_clip {
@@ -102,6 +111,7 @@ impl eframe::App for MyEguiApp {
                     size: Vec2::new(500.0, 200.0),
                     tf: &mut self.tf,
                     selected_clip: &mut self.selected_clip,
+                    selected_track: &mut self.selected_track,
                 }
                 .ui(ui);
             });
